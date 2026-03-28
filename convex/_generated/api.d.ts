@@ -8,17 +8,13 @@
  * @module
  */
 
-import type * as ai from "../ai.js";
-
 import type {
   ApiFromModules,
   FilterApi,
   FunctionReference,
 } from "convex/server";
 
-declare const fullApi: ApiFromModules<{
-  ai: typeof ai;
-}>;
+declare const fullApi: ApiFromModules<{}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.
