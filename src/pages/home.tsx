@@ -1,8 +1,9 @@
-import { useState } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { toast } from "sonner"
-import { Check, Loader2, Plus, RefreshCw, Sparkles } from "lucide-react"
-import { useAction } from "convex/react"
+import { Check, Loader2, Plus, RefreshCw, Sparkles, LogOut, History, ArrowUpDown } from "lucide-react"
+import { useAction, useQuery, useMutation, useConvexAuth } from "convex/react"
+import { useAuthActions } from "@convex-dev/auth/react"
 import { api } from "@convex/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,18 +12,98 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
+import { AuthForm } from "@/components/auth-form"
+import { PaywallModal } from "@/components/paywall-modal"
+
+const MOTIVATIONAL_QUOTES = [
+  "The secret of getting ahead is getting started. — Mark Twain",
+  "A year from now you'll wish you had started today. — Karen Lamb",
+  "Small steps every day lead to big changes over time.",
+  "You don't have to be great to start, but you have to start to be great. — Zig Ziglar",
+  "Progress, not perfection, is what we should be asking of ourselves.",
+  "The best time to plant a tree was 20 years ago. The second best time is now.",
+  "Done is better than perfect.",
+  "It always seems impossible until it's done. — Nelson Mandela",
+]
 
 export function HomePage() {
+  const { isAuthenticated, isLoading: authLoading } = useConvexAuth()
+  const { signOut } = useAuthActions()
+
   const [task, setTask] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
   const [steps, setSteps] = useState<string[]>([])
-  const [checkedSteps, setCheckedSteps] = useState<boolean[]>([false, false, false])
+  const [checkedSteps, setCheckedSteps] = useState<boolean[]>([])
+  const [showPaywall, setShowPaywall] = useState(false)
+  const [quote] = useState(() => MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)])
+  const [showHistory, setShowHistory] = useState(false)
+  const [historySort, setHistorySort] = useState<"latest" | "oldest">("latest")
 
+  const usage = useQuery(api.usage.getUsage)
+  const incrementUsage = useMutation(api.usage.incrementUsage)
   const generateSteps = useAction(api.ai.generateMicroSteps);
+  const saveTask = useMutation(api.tasks.saveTask)
+  const history = useQuery(api.tasks.getHistory, { sort: historySort })
+
+  const createCheckout = useAction(api.pay.createCheckout)
+  const checkAccess = useAction(api.pay.check)
+  const listProducts = useAction(api.pay.listProducts)
+  const upgradeToPremium = useMutation(api.usage.upgradeToPremium)
+
+  // Reusable function to check payment access
+  const checkPaymentAccess = useCallback(() => {
+    if (!isAuthenticated) return
+    if (usage?.isPremium) return
+    if (usage === undefined) return
+
+    checkAccess({ productSlug: "lifetime-access" })
+      .then((result) => {
+        if (result.data?.allowed) {
+          upgradeToPremium().catch(() => {})
+          toast.success("Welcome to unlimited access! 🎉")
+        }
+      })
+      .catch(() => {})
+  }, [isAuthenticated, usage?.isPremium, usage, checkAccess, upgradeToPremium])
+
+  // Check payment on mount + when user returns to tab (after checkout in another tab)
+  useEffect(() => {
+    checkPaymentAccess()
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        checkPaymentAccess()
+      }
+    }
+
+    const handleFocus = () => {
+      checkPaymentAccess()
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("focus", handleFocus)
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("focus", handleFocus)
+    }
+  }, [checkPaymentAccess])
 
   const handleGenerate = async () => {
     if (!task.trim()) {
       toast.error("Please enter a task you're avoiding")
+      return
+    }
+
+    // Check usage limit before calling AI
+    try {
+      const allowed = await incrementUsage()
+      if (!allowed) {
+        setShowPaywall(true)
+        return
+      }
+    } catch (error) {
+      toast.error("Something went wrong checking your usage")
       return
     }
 
@@ -32,6 +113,10 @@ export function HomePage() {
       const generatedSteps = await generateSteps({ task })
       setSteps(generatedSteps)
       setCheckedSteps(new Array(generatedSteps.length).fill(false))
+      
+      // Save to history (fire and forget, don't block UI)
+      saveTask({ task, steps: generatedSteps }).catch(() => {})
+
       toast.success("Micro-steps generated!")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Something went wrong")
@@ -59,14 +144,90 @@ export function HomePage() {
     setCheckedSteps([])
   }
 
+  const handleCheckout = useCallback(async () => {
+    try {
+      // Fetch products to get the real priceId
+      const productsResult = await listProducts({})
+      if (productsResult.error) {
+        toast.error("Could not load products. Please try again.")
+        return
+      }
+      
+      const lifetimeProduct = productsResult.data?.find(
+        (p: any) => p.product.slug === "lifetime-access"
+      )
+      if (!lifetimeProduct || !lifetimeProduct.prices?.[0]) {
+        toast.error("Product not found. Please try again.")
+        return
+      }
+
+      const priceId = lifetimeProduct.prices[0].id
+
+      const { data, error } = await createCheckout({
+        productSlug: "lifetime-access",
+        priceId,
+        successUrl: window.location.origin,
+      })
+
+      if (error) {
+        toast.error(error.message || "Checkout failed")
+        return
+      }
+      if (!data?.purchaseUrl) {
+        toast.error("Checkout failed. Please try again.")
+        return
+      }
+
+      // Open in new tab (required for iframe context)
+      window.open(data.purchaseUrl, "_blank", "noopener,noreferrer")
+      
+      // Close the paywall modal
+      setShowPaywall(false)
+      toast.success("Checkout opened in a new tab!")
+    } catch (error) {
+      toast.error("Something went wrong. Please try again.")
+    }
+  }, [createCheckout, listProducts])
+
   const completedCount = checkedSteps.filter(Boolean).length
   const totalSteps = steps.length || 1
   const progress = (completedCount / totalSteps) * 100
   const isAllDone = steps.length > 0 && completedCount === steps.length
 
+  if (authLoading) {
+    return (
+      <main className="min-h-screen bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-50 via-slate-50 to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-amber-600" />
+      </main>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <AuthForm />
+  }
+
   return (
     <main className="min-h-screen bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-50 via-slate-50 to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 flex items-center justify-center">
+      <div className="fixed top-4 right-4 z-50">
+        <Button variant="ghost" size="sm" onClick={() => signOut()} className="rounded-xl hover:bg-white/50 dark:hover:bg-slate-800/50">
+          <LogOut className="h-4 w-4 mr-1" /> Sign out
+        </Button>
+      </div>
+
       <div className="w-full max-w-2xl">
+        {usage && !usage.isPremium && (
+          <div className="text-center mb-4">
+            <Badge variant="secondary" className="bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm border-amber-200 dark:border-amber-900/30 text-amber-700 dark:text-amber-400">
+              {usage.remaining}/{usage.limit} free tasks remaining today
+            </Badge>
+          </div>
+        )}
+        {usage?.isPremium && (
+          <div className="text-center mb-4">
+            <Badge className="bg-amber-500 text-slate-950 hover:bg-amber-600">Unlimited ✨</Badge>
+          </div>
+        )}
+
         <AnimatePresence mode="wait">
           {steps.length === 0 ? (
             <motion.div
@@ -87,11 +248,14 @@ export function HomePage() {
                   <CardDescription className="text-lg text-slate-600 dark:text-slate-400">
                     The hardest part is starting. Let's break it down into tiny, manageable steps.
                   </CardDescription>
+                  <p className="text-sm text-amber-600/70 dark:text-amber-400/70 italic mt-2">
+                    "{quote}"
+                  </p>
                 </CardHeader>
                 <CardContent className="space-y-4 pt-4">
                   <div className="relative">
                     <Input
-                      placeholder="What task are you avoiding?"
+                      placeholder="Clean up bed, Study for a test..."
                       value={task}
                       onChange={(e) => setTask(e.target.value)}
                       className="h-14 text-lg pl-4 pr-12 rounded-2xl border-slate-200 dark:border-slate-800 focus-visible:ring-amber-500"
@@ -234,7 +398,84 @@ export function HomePage() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        <div className="mt-6 text-center">
+          <Button
+            variant="ghost"
+            onClick={() => setShowHistory(!showHistory)}
+            className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          >
+            <History className="h-4 w-4 mr-2" />
+            {showHistory ? "Hide Past Tasks" : "My Past Tasks"}
+          </Button>
+        </div>
+
+        {showHistory && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-4 space-y-3"
+          >
+            {/* Sort controls */}
+            <div className="flex items-center justify-between px-1">
+              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
+                {history?.length ?? 0} past {history?.length === 1 ? "task" : "tasks"}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setHistorySort(historySort === "latest" ? "oldest" : "latest")}
+                className="rounded-xl text-xs border-slate-200 dark:border-slate-800"
+              >
+                <ArrowUpDown className="h-3 w-3 mr-1" />
+                {historySort === "latest" ? "Latest first" : "Oldest first"}
+              </Button>
+            </div>
+
+            {/* History items */}
+            {!history ? (
+              <div className="text-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin mx-auto text-slate-400" />
+              </div>
+            ) : history.length === 0 ? (
+              <Card className="border-none bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                <CardContent className="py-8 text-center text-slate-500">
+                  No tasks yet. Generate your first micro-steps above!
+                </CardContent>
+              </Card>
+            ) : (
+              history.map((item) => (
+                <Card key={item._id} className="border-none bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm shadow-md">
+                  <CardHeader className="pb-2 pt-4 px-5">
+                    <div className="flex justify-between items-start">
+                      <CardTitle className="text-base font-semibold text-slate-700 dark:text-slate-200">
+                        {item.task}
+                      </CardTitle>
+                      <span className="text-xs text-slate-400 whitespace-nowrap ml-3">
+                        {new Date(item.createdAt).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pb-4 px-5">
+                    <ol className="space-y-1.5">
+                      {item.steps.map((step, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-400">
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-400">
+                            {i + 1}
+                          </span>
+                          {step}
+                        </li>
+                      ))}
+                    </ol>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </motion.div>
+        )}
       </div>
+
+      <PaywallModal open={showPaywall} onOpenChange={setShowPaywall} onCheckout={handleCheckout} />
     </main>
   )
 }

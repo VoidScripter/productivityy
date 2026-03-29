@@ -4,7 +4,8 @@ import {
   createBrowserRouter,
   RouterProvider,
 } from "react-router";
-import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { ConvexAuthProvider } from "@convex-dev/auth/react";
+import { ConvexReactClient } from "convex/react";
 import { ErrorBoundary } from '@/components/error/boundary';
 import { RouteErrorBoundary } from '@/components/error/route-error-boundary';
 import { HomePage } from '@/pages/home'
@@ -38,11 +39,11 @@ const notifyParentReady = () => {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {/* Uncommend this to enable auth */}
-      <ErrorBoundary>
-        <ConvexProvider client={convex}>
-          <RouterProvider router={router} />
-        </ConvexProvider>
-      </ErrorBoundary>
+    <ErrorBoundary>
+      <ConvexAuthProvider client={convex}>
+        <RouterProvider router={router} />
+      </ConvexAuthProvider>
+    </ErrorBoundary>
       <Toaster />
   </StrictMode>,
 )
