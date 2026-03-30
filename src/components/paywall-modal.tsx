@@ -39,7 +39,7 @@ export function PaywallModal({ open, onOpenChange, onCheckout }: PaywallModalPro
             You've reached your daily limit!
           </DialogTitle>
           <DialogDescription className="text-lg text-slate-600 dark:text-slate-400 leading-relaxed">
-            You've used all 3 free task breakdowns for today. Unlock unlimited lifetime access to never hit a limit again.
+            You've used all 4 free task breakdowns for today. Unlock unlimited lifetime access to never hit a limit again.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="flex flex-col gap-3 sm:flex-col pt-4">

@@ -14,6 +14,7 @@ import { Progress } from "@/components/ui/progress"
 import { cn } from "@/lib/utils"
 import { AuthForm } from "@/components/auth-form"
 import { PaywallModal } from "@/components/paywall-modal"
+import { SignupWallModal } from "@/components/signup-wall-modal"
 
 const MOTIVATIONAL_QUOTES = [
   "The secret of getting ahead is getting started. — Mark Twain",
@@ -38,6 +39,11 @@ export function HomePage() {
   const [quote] = useState(() => MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)])
   const [showHistory, setShowHistory] = useState(false)
   const [historySort, setHistorySort] = useState<"latest" | "oldest">("latest")
+
+  // New state variables
+  const [guestUsed, setGuestUsed] = useState(() => localStorage.getItem("microsteps_guest_used") === "true")
+  const [showSignupWall, setShowSignupWall] = useState(false)
+  const [showAuthForm, setShowAuthForm] = useState(false)
 
   const usage = useQuery(api.usage.getUsage)
   const incrementUsage = useMutation(api.usage.incrementUsage)
@@ -95,7 +101,31 @@ export function HomePage() {
       return
     }
 
-    // Check usage limit before calling AI
+    // GUEST flow
+    if (!isAuthenticated) {
+      if (guestUsed) {
+        setShowSignupWall(true)
+        return
+      }
+
+      setIsGenerating(true)
+      try {
+        const generatedSteps = await generateSteps({ task })
+        setSteps(generatedSteps)
+        setCheckedSteps(new Array(generatedSteps.length).fill(false))
+        // Mark guest as having used their free try
+        localStorage.setItem("microsteps_guest_used", "true")
+        setGuestUsed(true)
+        toast.success("Micro-steps generated!")
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Something went wrong")
+      } finally {
+        setIsGenerating(false)
+      }
+      return
+    }
+
+    // AUTHENTICATED flow (existing logic — unchanged)
     try {
       const allowed = await incrementUsage()
       if (!allowed) {
@@ -108,15 +138,11 @@ export function HomePage() {
     }
 
     setIsGenerating(true)
-    
     try {
       const generatedSteps = await generateSteps({ task })
       setSteps(generatedSteps)
       setCheckedSteps(new Array(generatedSteps.length).fill(false))
-      
-      // Save to history (fire and forget, don't block UI)
       saveTask({ task, steps: generatedSteps }).catch(() => {})
-
       toast.success("Micro-steps generated!")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Something went wrong")
@@ -194,6 +220,7 @@ export function HomePage() {
   const progress = (completedCount / totalSteps) * 100
   const isAllDone = steps.length > 0 && completedCount === steps.length
 
+  // Auth loading — keep as-is
   if (authLoading) {
     return (
       <main className="min-h-screen bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-50 via-slate-50 to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 flex items-center justify-center">
@@ -202,29 +229,48 @@ export function HomePage() {
     )
   }
 
-  if (!isAuthenticated) {
+  // Show auth form when user chose to sign up from the signup wall
+  if (showAuthForm && !isAuthenticated) {
     return <AuthForm />
   }
 
   return (
     <main className="min-h-screen bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-amber-50 via-slate-50 to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-6 flex items-center justify-center">
+      
+      {/* Top-right: Sign out (authenticated) or Sign in (guest) */}
       <div className="fixed top-4 right-4 z-50">
-        <Button variant="ghost" size="sm" onClick={() => signOut()} className="rounded-xl hover:bg-white/50 dark:hover:bg-slate-800/50">
-          <LogOut className="h-4 w-4 mr-1" /> Sign out
-        </Button>
+        {isAuthenticated ? (
+          <Button variant="ghost" size="sm" onClick={() => signOut()} className="rounded-xl hover:bg-white/50 dark:hover:bg-slate-800/50">
+            <LogOut className="h-4 w-4 mr-1" /> Sign out
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => setShowAuthForm(true)} className="rounded-xl hover:bg-white/50 dark:hover:bg-slate-800/50 text-amber-700 dark:text-amber-400">
+            Sign in
+          </Button>
+        )}
       </div>
 
       <div className="w-full max-w-2xl">
-        {usage && !usage.isPremium && (
+        {/* Usage badge — only for authenticated users */}
+        {isAuthenticated && usage && !usage.isPremium && (
           <div className="text-center mb-4">
             <Badge variant="secondary" className="bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm border-amber-200 dark:border-amber-900/30 text-amber-700 dark:text-amber-400">
               {usage.remaining}/{usage.limit} free tasks remaining today
             </Badge>
           </div>
         )}
-        {usage?.isPremium && (
+        {isAuthenticated && usage?.isPremium && (
           <div className="text-center mb-4">
             <Badge className="bg-amber-500 text-slate-950 hover:bg-amber-600">Unlimited ✨</Badge>
+          </div>
+        )}
+        
+        {/* Guest badge — show for unauthenticated users */}
+        {!isAuthenticated && (
+          <div className="text-center mb-4">
+            <Badge variant="secondary" className="bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm border-emerald-200 dark:border-emerald-900/30 text-emerald-700 dark:text-emerald-400">
+              {guestUsed ? "0/1 free try remaining" : "1 free try — no sign-up needed!"}
+            </Badge>
           </div>
         )}
 
@@ -243,10 +289,12 @@ export function HomePage() {
                     <Sparkles className="w-6 h-6 text-amber-600 dark:text-amber-400" />
                   </div>
                   <CardTitle className="text-3xl font-bold tracking-tight text-slate-800 dark:text-slate-100">
-                    Stop Procrastinating
+                    {isAuthenticated ? "Stop Procrastinating" : "Boost Your Productivity & Stop Procrastinating"}
                   </CardTitle>
                   <CardDescription className="text-lg text-slate-600 dark:text-slate-400">
-                    The hardest part is starting. Let's break it down into tiny, manageable steps.
+                    {isAuthenticated 
+                      ? "The hardest part is starting. Let's break it down into tiny, manageable steps."
+                      : "Our AI breaks overwhelming tasks into 3 tiny micro-steps you can do in under 2 minutes each. Try it free — no sign-up required."}
                   </CardDescription>
                   <p className="text-sm text-amber-600/70 dark:text-amber-400/70 italic mt-2">
                     "{quote}"
@@ -399,83 +447,123 @@ export function HomePage() {
           )}
         </AnimatePresence>
 
-        <div className="mt-6 text-center">
-          <Button
-            variant="ghost"
-            onClick={() => setShowHistory(!showHistory)}
-            className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
-          >
-            <History className="h-4 w-4 mr-2" />
-            {showHistory ? "Hide Past Tasks" : "My Past Tasks"}
-          </Button>
-        </div>
-
-        {showHistory && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-4 space-y-3"
-          >
-            {/* Sort controls */}
-            <div className="flex items-center justify-between px-1">
-              <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-                {history?.length ?? 0} past {history?.length === 1 ? "task" : "tasks"}
-              </p>
+        {/* History section — only for authenticated users */}
+        {isAuthenticated && (
+          <>
+            <div className="mt-6 text-center">
               <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setHistorySort(historySort === "latest" ? "oldest" : "latest")}
-                className="rounded-xl text-xs border-slate-200 dark:border-slate-800"
+                variant="ghost"
+                onClick={() => setShowHistory(!showHistory)}
+                className="text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
               >
-                <ArrowUpDown className="h-3 w-3 mr-1" />
-                {historySort === "latest" ? "Latest first" : "Oldest first"}
+                <History className="h-4 w-4 mr-2" />
+                {showHistory ? "Hide Past Tasks" : "My Past Tasks"}
               </Button>
             </div>
 
-            {/* History items */}
-            {!history ? (
-              <div className="text-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin mx-auto text-slate-400" />
-              </div>
-            ) : history.length === 0 ? (
-              <Card className="border-none bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                <CardContent className="py-8 text-center text-slate-500">
-                  No tasks yet. Generate your first micro-steps above!
-                </CardContent>
-              </Card>
-            ) : (
-              history.map((item) => (
-                <Card key={item._id} className="border-none bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm shadow-md">
-                  <CardHeader className="pb-2 pt-4 px-5">
-                    <div className="flex justify-between items-start">
-                      <CardTitle className="text-base font-semibold text-slate-700 dark:text-slate-200">
-                        {item.task}
-                      </CardTitle>
-                      <span className="text-xs text-slate-400 whitespace-nowrap ml-3">
-                        {new Date(item.createdAt).toLocaleDateString()}
-                      </span>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pb-4 px-5">
-                    <ol className="space-y-1.5">
-                      {item.steps.map((step, i) => (
-                        <li key={i} className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-400">
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-400">
-                            {i + 1}
+            {showHistory && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-4 space-y-3"
+              >
+                {/* Sort controls */}
+                <div className="flex items-center justify-between px-1">
+                  <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
+                    {history?.length ?? 0} past {history?.length === 1 ? "task" : "tasks"}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setHistorySort(historySort === "latest" ? "oldest" : "latest")}
+                    className="rounded-xl text-xs border-slate-200 dark:border-slate-800"
+                  >
+                    <ArrowUpDown className="h-3 w-3 mr-1" />
+                    {historySort === "latest" ? "Latest first" : "Oldest first"}
+                  </Button>
+                </div>
+
+                {/* History items */}
+                {!history ? (
+                  <div className="text-center py-8">
+                    <Loader2 className="h-5 w-5 animate-spin mx-auto text-slate-400" />
+                  </div>
+                ) : history.length === 0 ? (
+                  <Card className="border-none bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                    <CardContent className="py-8 text-center text-slate-500">
+                      No tasks yet. Generate your first micro-steps above!
+                    </CardContent>
+                  </Card>
+                ) : (
+                  history.map((item) => (
+                    <Card key={item._id} className="border-none bg-white/60 dark:bg-slate-900/60 backdrop-blur-sm shadow-md">
+                      <CardHeader className="pb-2 pt-4 px-5">
+                        <div className="flex justify-between items-start">
+                          <CardTitle className="text-base font-semibold text-slate-700 dark:text-slate-200">
+                            {item.task}
+                          </CardTitle>
+                          <span className="text-xs text-slate-400 whitespace-nowrap ml-3">
+                            {new Date(item.createdAt).toLocaleDateString()}
                           </span>
-                          {step}
-                        </li>
-                      ))}
-                    </ol>
-                  </CardContent>
-                </Card>
-              ))
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pb-4 px-5">
+                        <ol className="space-y-1.5">
+                          {item.steps.map((step, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-400">
+                              <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-xs font-bold text-slate-400">
+                                {i + 1}
+                              </span>
+                              {step}
+                            </li>
+                          ))}
+                        </ol>
+                      </CardContent>
+                    </Card>
+                  ))
+                )}
+              </motion.div>
             )}
+          </>
+        )}
+
+        {/* Guest prompt to sign up — show below steps for guests who used their free try */}
+        {!isAuthenticated && steps.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 text-center"
+          >
+            <Card className="border-none bg-emerald-50/80 dark:bg-emerald-900/20 backdrop-blur-sm shadow-md">
+              <CardContent className="py-5">
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+                  Like what you see? Sign up to get <strong>4 free breakdowns daily</strong> + save your history.
+                </p>
+                <Button
+                  onClick={() => setShowAuthForm(true)}
+                  size="sm"
+                  className="rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white"
+                >
+                  Create Free Account
+                </Button>
+              </CardContent>
+            </Card>
           </motion.div>
         )}
       </div>
 
-      <PaywallModal open={showPaywall} onOpenChange={setShowPaywall} onCheckout={handleCheckout} />
+      {/* Modals */}
+      <SignupWallModal 
+        open={showSignupWall} 
+        onOpenChange={setShowSignupWall} 
+        onSignUp={() => {
+          setShowSignupWall(false)
+          setShowAuthForm(true)
+        }} 
+      />
+      {isAuthenticated && (
+        <PaywallModal open={showPaywall} onOpenChange={setShowPaywall} onCheckout={handleCheckout} />
+      )}
     </main>
   )
 }

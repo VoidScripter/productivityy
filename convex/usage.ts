@@ -2,7 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
-const FREE_DAILY_LIMIT = 3;
+const FREE_DAILY_LIMIT = 4;
 
 // Helper to get today's date string in UTC
 function getTodayString(): string {
